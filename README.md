@@ -3,57 +3,74 @@ Simple IoT project using ESP controller to monitor temperature for later analysi
 
 ## Hardware
 
-- ESP8266 ESP-12E (e.g. NodeMCU or Wemos D1 mini)
+- ESP32-C3 SuperMini
 - DS18B20 temperature sensor (3-wire version)
 - 4.7 kΩ resistor
-- 18650 Li-ion battery
-- 120 kΩ resistor (battery measurement)
+- 18650 Li-ion battery (protected cell, or a charger module with protection)
+- 2 × 1 MΩ resistors and a 100 nF capacitor (battery measurement)
 
 ## Wiring
 
+| Pin | Connected to |
+|---|---|
+| GPIO4 | DS18B20 DATA |
+| GPIO3 | Battery voltage divider |
+| GPIO8 | Blue on-board LED (status, active low) |
+| GPIO9 | BOOT button (config portal, active low) |
+| 5V | Battery + |
+| 3V3 | DS18B20 VDD, DS18B20 pull-up |
+| GND | Battery −, DS18B20 GND, divider |
+
+### Temperature sensor
+
 The sensor uses normal (external) power, not parasite power.
 
-| Wire (usual color) | DS18B20 | ESP-12E |
+| Wire (usual color) | DS18B20 | ESP32-C3 SuperMini |
 |---|---|---|
-| red | VDD | 3.3V |
+| red | VDD | 3V3 |
 | black | GND | GND |
-| yellow / white | DATA | GPIO4 (D2) |
+| yellow / white | DATA | GPIO4 |
 
-A **4.7 kΩ pull-up resistor between DATA and 3.3V is required**. Without it the sensor will not be detected.
+A **4.7 kΩ pull-up resistor between DATA and 3V3 is required**. Without it the sensor will not be detected.
 
 Wire colors can differ between manufacturers, so check the seller's description or the datasheet.
 
-To use a different data pin, change `ONE_WIRE_PIN` in [src/main.cpp](src/main.cpp).
-
-### Deep sleep wake-up
-
-**Connect GPIO16 (D0) to RST.** The RTC timer wakes the chip by pulling GPIO16 low, which resets it. Without this wire the ESP never wakes up from deep sleep.
-
-If uploading fails with the wire in place, disconnect it while flashing.
-
-### Battery measurement
-
-Connect **battery + through a 120 kΩ resistor to A0**. Battery − goes to GND.
-
-NodeMCU already has a 220k/100k divider on A0, which gives 3.2 V full scale. That is less than a full 18650 (4.2 V). The external 120 kΩ in series extends full scale to ~4.4 V:
-
-```
-battery + ── 120k ── A0 ──[ on board: 220k ── ADC ── 100k ── GND ]
-```
-
-Measure at the battery terminal, before any regulator.
-
-Check the divider on your board before relying on the readings: with the board unpowered, the resistance between A0 and GND should be about 320 kΩ. If your board uses different resistors, update `BATTERY_DIVIDER_RATIO` in [include/Battery.h](include/Battery.h).
-
-The divider draws a constant ~10 µA from the battery (4.2 V / 440 kΩ).
-
-**Calibration:** the ESP8266 ADC and resistor tolerances can be off by several percent. Measure the battery with a multimeter, compare it with the voltage in the serial output, and set `BATTERY_CALIBRATION` to `measured / reported`.
+To use a different data pin, change `ONE_WIRE_PIN` in [src/main.cpp](src/main.cpp). Avoid GPIO2, GPIO8 and GPIO9: they are strapping pins that decide the boot mode.
 
 ### Normal vs. parasite power
 
 In parasite power mode the DS18B20 is powered through the DATA line: VDD is tied to GND and only two wires are used. During temperature conversion the microcontroller has to drive the line HIGH directly ("strong pull-up"), because the pull-up resistor can't supply enough current.
 
 Normal power, with VDD on 3.3V, is more reliable, especially with long cables or several sensors on one bus. It is what this project uses. The `DallasTemperature` library detects the mode automatically, so no code change is needed.
+
+### Battery
+
+Connect **battery + to the 5V pin** and battery − to GND. The on-board regulator turns it into 3.3 V.
+
+**Don't connect USB while the battery is on the 5V pin**, unless you have checked that your board has a diode between USB and the 5V pin. Without one, USB 5 V goes straight into the 18650. Either disconnect the battery while using USB, or put a Schottky diode (e.g. 1N5817) between battery + and the 5V pin, anode on the battery side. The diode costs about 0.2-0.3 V of battery range.
+
+Charge the battery with a separate charger module, for example TP4056 with DW01 protection.
+
+### Battery measurement
+
+The ESP32-C3 ADC reads up to about 2.5 V, so the battery voltage (up to 4.2 V) goes through a divider that halves it:
+
+```
+battery + ── 1M ──┬── 1M ── GND
+                  │
+                GPIO3
+                  │
+                100 nF
+                  │
+                 GND
+```
+
+- Measure at the battery terminal, before the regulator (and before the diode, if you use one).
+- The capacitor is needed: with 1 MΩ resistors the divider can't charge the ADC sampling capacitor fast enough on its own, and readings would be too low and noisy.
+- The divider draws about 2 µA (4.2 V / 2 MΩ).
+- GPIO3 is on ADC1. Don't move it to GPIO5: that is ADC2, which doesn't work while WiFi is on.
+
+**Calibration:** `analogReadMilliVolts()` uses the factory ADC calibration, but resistor tolerances still add error. Measure the battery with a multimeter, compare it with the voltage in the serial output, and set `BATTERY_CALIBRATION` in [include/Battery.h](include/Battery.h) to `measured / reported`.
 
 ## How it works
 
@@ -67,11 +84,13 @@ Every 30 minutes (configurable) the ESP wakes up from deep sleep and:
 
 Each wake-up is a fresh boot, so the whole cycle runs in `setup()` and `loop()` is never reached. If WiFi or Blynk can't connect within the timeout, the measurement is skipped and the ESP goes back to sleep, so a network outage doesn't drain the battery.
 
+The ESP32-C3 wakes itself from deep sleep with its internal RTC timer. No extra wiring is needed.
+
 The interval is set in the config portal. Timeouts are set at the top of [src/main.cpp](src/main.cpp) (`WIFI_CONNECT_TIMEOUT_MS`, `BACKEND_CONNECT_TIMEOUT_MS`, `CONFIG_PORTAL_TIMEOUT_S`).
 
 ### Battery protection
 
-If the battery is below **3.3 V** (`BATTERY_CUTOFF_V`), the ESP doesn't start WiFi and goes to deep sleep without a wake-up timer. This protects the cell from over-discharge and avoids a reset loop caused by WiFi current peaks on a weak battery. After recharging, press RST.
+If the battery is below **3.3 V** (`BATTERY_CUTOFF_V`), the ESP doesn't start WiFi and goes to deep sleep with no wake-up source. This protects the cell from over-discharge and avoids a reset loop caused by WiFi current peaks on a weak battery. After recharging, press RST.
 
 Battery charge in percent comes from a typical Li-ion discharge curve, where 3.3 V is 0 %. It is an estimate: the curve differs between cells and with temperature.
 
@@ -104,8 +123,8 @@ All devices run the same firmware. Per-device settings are entered over WiFi fro
 
 On first boot, with no saved config, the ESP opens a config portal:
 
-1. The blue LED on the ESP module turns on.
-2. On your phone, connect to the WiFi network `TempMonitor-XXXXXX`. The suffix is the chip ID, so several devices can be told apart.
+1. The blue LED turns on.
+2. On your phone, connect to the WiFi network `TempMonitor-XXXXXX`. The suffix is the end of the MAC address, so several devices can be told apart.
 3. The setup page opens automatically. If it doesn't, open `192.168.4.1` in a browser.
 4. Tap **Configure WiFi**, pick your network, and enter the password, the Blynk auth token and the measurement interval (1-180 minutes).
 5. Save. Once the ESP connects to your network, it stores the settings and restarts into the normal cycle.
@@ -114,9 +133,9 @@ The portal closes after 5 minutes without saving. If the device was not configur
 
 ### Changing the settings later
 
-Press **RST**, release it, then press and hold **FLASH** until the blue LED turns on (up to ~10 s, while the ESP is awake). The portal opens with the current token and interval filled in. If you leave without saving, the old settings are kept.
+Press **RST**, release it, then press and hold **BOOT** until the blue LED turns on (up to ~10 s, while the ESP is awake). The portal opens with the current token and interval filled in. If you leave without saving, the old settings are kept.
 
-Don't hold FLASH while pressing RST: that starts the ESP bootloader instead. Just press RST again.
+Don't hold BOOT while pressing RST: that starts the ESP bootloader instead. Just press RST again.
 
 A lost WiFi connection, for example while the router is off, never opens the portal on its own. The ESP skips that measurement and tries again on the next wake-up.
 
@@ -129,12 +148,26 @@ pio run -t upload
 pio device monitor
 ```
 
-The serial port runs at 115200 baud.
+The ESP32-C3 has USB built into the chip, so the USB port only exists while the ESP is awake. To upload while it is sleeping:
+
+1. Hold **BOOT**.
+2. Press and release **RST**.
+3. Release BOOT. The USB port appears and stays.
+4. Run `pio run -t upload`.
+5. Press RST to start the new firmware.
+
+The serial monitor also disconnects every time the ESP goes to sleep. Lines printed right after wake-up can be missing, because the computer needs a moment to reconnect to the USB port.
+
+If the build fails with `No module named 'intelhex'`, install it into the PlatformIO Python environment:
+
+```
+~/.platformio/penv/Scripts/python -m pip install intelhex
+```
 
 ## Expected serial output
 
 ```
-IoT Temperature Monitor - wake-up (Deep-Sleep Wake)
+IoT Temperature Monitor - wake-up (timer)
 Battery: 3.95 V, 74 %
 Config: loaded, SSID 'MyHomeWiFi', interval 30 min
 DS18B20: found 1 device(s) on GPIO4
@@ -150,30 +183,31 @@ A DS18B20 address always starts with `28`, the family code. Resolution is set to
 
 ## Power consumption (estimate)
 
-Not measured yet. Figures are typical values for the bare ESP-12E module.
+Not measured yet. Figures are typical values for the ESP32-C3 SuperMini with the power LED removed.
 
 | Phase | Current | Duration per cycle |
 |---|---|---|
-| Awake (boot, WiFi, Blynk) | ~70-80 mA average, peaks up to ~170 mA | ~3-6 s |
-| Deep sleep | ~20 µA, plus ~10 µA for the battery divider | rest of the 30 min |
+| Awake (boot, WiFi, Blynk) | ~80-100 mA average, peaks up to ~350 mA | ~3-6 s |
+| Deep sleep | ~5 µA chip, plus regulator quiescent current (1-50 µA, depends on the board), ~2 µA divider, ~1 µA DS18B20 | rest of the 30 min |
 
-That comes to roughly **3-6 mAh per day**, about 1 year on a 2000 mAh battery. Most of the energy goes to the WiFi connection, not to sleep.
+That comes to roughly **4-8 mAh per day**, about 9-12 months on a 2000 mAh battery. Most of the energy goes to the WiFi connection, not to sleep.
 
-Deep sleep is used instead of light sleep. ESP8266 light sleep draws ~0.5-1 mA (about 20-25 mAh per day) and its timer can't sleep for a full 30 minutes.
+**The power LED has to be removed.** It draws around 1-3 mA all the time, which is more than everything else in sleep combined and cuts battery life to a few weeks. See [docs/board-modification.md](docs/board-modification.md).
 
-Development boards draw much more in sleep: the NodeMCU voltage regulator and USB-serial chip add roughly 5-15 mA. For battery use, run on a bare module or a board with a low-quiescent regulator (e.g. HT7333, MCP1700). See [docs/board-modification.md](docs/board-modification.md) for how to modify a Lolin NodeMCU.
+Deep sleep is used instead of light sleep, because light sleep keeps more of the chip powered and draws over 100 µA.
 
 ## Troubleshooting
 
 | Symptom | Likely cause |
 |---|---|
 | `found 0 device(s)` | Missing pull-up resistor, or DATA not on GPIO4 |
-| `parasite power ON` | VDD (red wire) not connected to 3.3V, or wire colors differ on your sensor |
-| ESP never wakes up | GPIO16 (D0) not connected to RST |
-| `WiFi: connection timeout` | Router off, weak signal, or WiFi password changed (reopen the config portal) |
+| `parasite power ON` | VDD (red wire) not connected to 3V3, or wire colors differ on your sensor |
+| USB port disappears | Normal: the ESP is in deep sleep. For upload, use BOOT + RST |
+| `WiFi: connection timeout` | Router off, weak signal, or WiFi password changed (reopen the config portal). On some SuperMini boards, enabling `WIFI_TX_POWER` in [src/main.cpp](src/main.cpp) helps |
 | `Backend: connection failed` | Wrong Blynk auth token, or template ID/name in `blynk_template.h` don't match the device |
-| Portal network doesn't appear | Device already configured: use RST + FLASH to reopen the portal |
-| `Battery: not detected` while on battery | 120 kΩ resistor not connected to A0, or battery − not on GND |
-| Battery voltage off by more than a few % | Calibrate `BATTERY_CALIBRATION`, or check the A0 divider on your board |
+| Wake-up reason `brownout` | Battery nearly empty, or the regulator can't supply WiFi current peaks. Add a 470-1000 µF capacitor between 3V3 and GND |
+| Portal network doesn't appear | Device already configured: use RST + BOOT to reopen the portal |
+| `Battery: not detected` while on battery | Divider not connected to GPIO3, or battery − not on GND |
+| Battery voltage off by more than a few % | Missing 100 nF capacitor on GPIO3, or calibrate `BATTERY_CALIBRATION` |
 | `Battery: below cutoff, sleeping until reset` | Battery empty: recharge it, then press RST |
 | `Not configured, sleeping until reset` | Portal timed out on first setup: press RST to open it again |

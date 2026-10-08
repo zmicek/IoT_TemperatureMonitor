@@ -9,13 +9,18 @@ static uint16_t clampInterval(uint16_t intervalMin) {
   return constrain(intervalMin, MIN_INTERVAL_MIN, MAX_INTERVAL_MIN);
 }
 
+// Formats the partition on first use, when it doesn't hold a file system yet
+static bool mountFileSystem() {
+  return LittleFS.begin(true);
+}
+
 bool loadConfig(DeviceConfig &config) {
   config.wifiSsid[0] = '\0';
   config.wifiPassword[0] = '\0';
   config.blynkToken[0] = '\0';
   config.intervalMin = DEFAULT_INTERVAL_MIN;
 
-  if (!LittleFS.begin()) {
+  if (!mountFileSystem()) {
     Serial.println("Config: failed to mount LittleFS");
     return false;
   }
@@ -50,7 +55,7 @@ bool loadConfig(DeviceConfig &config) {
 }
 
 bool saveConfig(const DeviceConfig &config) {
-  if (!LittleFS.begin()) {
+  if (!mountFileSystem()) {
     Serial.println("Config: failed to mount LittleFS");
     return false;
   }

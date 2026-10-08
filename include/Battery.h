@@ -2,11 +2,11 @@
 
 #include <Arduino.h>
 
-// 18650 Li-ion battery measured on A0.
-// NodeMCU has an on-board 220k/100k divider on A0 (3.2 V full scale). An external
-// 120k resistor in series between battery + and A0 extends full scale to ~4.4 V:
-// (120k + 220k + 100k) / 100k = 4.4
-#define BATTERY_DIVIDER_RATIO 4.4f
+// 18650 Li-ion battery measured on GPIO3 (ADC1; ADC2 doesn't work while WiFi is on).
+// External divider: battery + -- 1M -- GPIO3 -- 1M -- GND, with 100 nF from GPIO3 to GND.
+// A full battery (4.2 V) gives 2.1 V on the pin, within the ADC range (~2.5 V).
+#define BATTERY_ADC_PIN 3
+#define BATTERY_DIVIDER_RATIO 2.0f  // (1M + 1M) / 1M
 
 // Correction for resistor tolerance and ADC error. Set to
 // (voltage measured with a multimeter) / (voltage reported by the device).

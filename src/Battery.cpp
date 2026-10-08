@@ -1,8 +1,6 @@
 #include "Battery.h"
 
-#define BATTERY_ADC_PIN A0
 #define BATTERY_SAMPLES 16
-#define ADC_FULL_SCALE 1024.0f  // ESP8266 analogRead returns 0-1024 for 0-1.0 V
 
 struct VoltagePoint {
   float voltage;
@@ -18,13 +16,14 @@ static const VoltagePoint DISCHARGE_CURVE[] = {
 static const size_t DISCHARGE_CURVE_SIZE = sizeof(DISCHARGE_CURVE) / sizeof(DISCHARGE_CURVE[0]);
 
 float readBatteryVoltage() {
-  uint32_t sum = 0;
+  // analogReadMilliVolts applies the factory ADC calibration stored in eFuse
+  uint32_t sumMv = 0;
   for (uint8_t i = 0; i < BATTERY_SAMPLES; i++) {
-    sum += analogRead(BATTERY_ADC_PIN);
+    sumMv += analogReadMilliVolts(BATTERY_ADC_PIN);
     delay(2);
   }
-  float adcVoltage = (sum / (float)BATTERY_SAMPLES) / ADC_FULL_SCALE;
-  return adcVoltage * BATTERY_DIVIDER_RATIO * BATTERY_CALIBRATION;
+  float pinVoltage = (sumMv / (float)BATTERY_SAMPLES) / 1000.0f;
+  return pinVoltage * BATTERY_DIVIDER_RATIO * BATTERY_CALIBRATION;
 }
 
 bool isBatteryPresent(float voltage) {

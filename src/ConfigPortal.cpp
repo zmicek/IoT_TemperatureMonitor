@@ -16,9 +16,12 @@ bool runConfigPortal(DeviceConfig &config, uint16_t timeoutSec) {
   wifiManager.addParameter(&intervalParam);
   wifiManager.setConfigPortalTimeout(timeoutSec);
 
-  // Chip ID in the name tells devices apart when several are being set up
+  // Last 3 bytes of the MAC in the name tell devices apart when several are being set up
+  uint64_t mac = ESP.getEfuseMac();
+  const uint8_t *macBytes = (const uint8_t *)&mac;
   char apName[32];
-  snprintf(apName, sizeof(apName), "TempMonitor-%06X", ESP.getChipId());
+  snprintf(apName, sizeof(apName), "TempMonitor-%02X%02X%02X", macBytes[3], macBytes[4],
+           macBytes[5]);
   Serial.printf("Config portal: connect to WiFi '%s' (timeout %u s)\n", apName, timeoutSec);
 
   // Returns true only once the device has connected with the entered credentials

@@ -1,5 +1,6 @@
 #include <Arduino.h>
-#include <ESP8266WiFi.h>
+#include <WiFi.h>
+#include <esp_sleep.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
@@ -11,18 +12,21 @@
 
 #define SERIAL_BAUD 115200
 
-// DS18B20 data pin: GPIO4 (D2 on NodeMCU/Wemos). Needs a 4.7k pull-up to 3.3V.
+// DS18B20 data pin. Needs a 4.7k pull-up to 3.3V.
 #define ONE_WIRE_PIN 4
 #define DS18B20_RESOLUTION 12  // 9-12 bits
 #define DS18B20_CONVERSION_TIMEOUT_MS 1000
 
-// Deep sleep wake-up requires GPIO16 (D0) wired to RST
 #define WIFI_CONNECT_TIMEOUT_MS 10000
 #define BACKEND_CONNECT_TIMEOUT_MS 5000
 
-// Config portal is opened on first boot, or when the FLASH button is held while awake
-#define CONFIG_BUTTON_PIN 0  // FLASH button on NodeMCU, active low
-#define STATUS_LED_PIN 2     // ESP-12 blue LED, active low, lit while the portal is open
+// Some SuperMini batches have a poorly tuned antenna and connect more reliably with
+// lower transmit power, which also lowers current peaks. Uncomment if WiFi is unstable.
+// #define WIFI_TX_POWER WIFI_POWER_8_5dBm
+
+// Config portal is opened on first boot, or when the BOOT button is held while awake
+#define CONFIG_BUTTON_PIN 9  // BOOT button on SuperMini, active low
+#define STATUS_LED_PIN 8     // SuperMini blue LED, active low, lit while the portal is open
 #define CONFIG_PORTAL_TIMEOUT_S 300
 
 OneWire oneWire(ONE_WIRE_PIN);
@@ -41,13 +45,17 @@ bool publish(DataSink &sink, const Measurement &measurement);
 bool configButtonPressed();
 void enterConfigMode(bool haveConfig);
 void readBattery(Measurement &measurement);
+const char *wakeReason();
 void goToSleep();
+void sleepForever();
 
 // The whole measure-send-sleep cycle runs here; each wake-up is a fresh boot.
 void setup() {
+  // Serial runs over the built-in USB. Without a USB host the output is dropped without
+  // blocking, so it costs no awake time on battery.
   Serial.begin(SERIAL_BAUD);
   Serial.println();
-  Serial.printf("IoT Temperature Monitor - wake-up (%s)\n", ESP.getResetReason().c_str());
+  Serial.printf("IoT Temperature Monitor - wake-up (%s)\n", wakeReason());
 
   pinMode(CONFIG_BUTTON_PIN, INPUT_PULLUP);
 
@@ -157,8 +165,7 @@ void readBattery(Measurement &measurement) {
     // No WiFi attempt: the current peaks could brown out the regulator and cause
     // a reset loop. Sleeping without a timer wakes only on RST, after recharging.
     Serial.println("Battery: below cutoff, sleeping until reset");
-    Serial.flush();
-    ESP.deepSleep(0);
+    sleepForever();
   }
 }
 
@@ -166,6 +173,9 @@ bool connectWiFi(uint32_t timeoutMs) {
   WiFi.persistent(false);  // don't rewrite WiFi config in flash on every wake-up
   WiFi.mode(WIFI_STA);
   WiFi.begin(config.wifiSsid, config.wifiPassword);
+#ifdef WIFI_TX_POWER
+  WiFi.setTxPower(WIFI_TX_POWER);
+#endif
 
   uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED) {
@@ -215,8 +225,30 @@ void enterConfigMode(bool haveConfig) {
   // Not configured yet: sleep until RST is pressed instead of reopening the portal
   // every interval and draining the battery
   Serial.println("Not configured, sleeping until reset");
-  Serial.flush();
-  ESP.deepSleep(0);
+  sleepForever();
+}
+
+const char *wakeReason() {
+  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER) {
+    return "timer";
+  }
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:
+      return "power-on or RST button";
+    case ESP_RST_DEEPSLEEP:
+      return "deep sleep";
+    case ESP_RST_SW:
+      return "restart";
+    case ESP_RST_BROWNOUT:
+      return "brownout";
+    case ESP_RST_PANIC:
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:
+      return "crash";
+    default:
+      return "other";
+  }
 }
 
 // Sleeps for the rest of the interval, so wake-ups stay ~config.intervalMin apart
@@ -228,5 +260,12 @@ void goToSleep() {
   Serial.printf("Awake for %lu ms, sleeping for %lu s\n", millis(),
                 (unsigned long)(sleepUs / 1000000ULL));
   Serial.flush();
-  ESP.deepSleep(sleepUs);
+  esp_sleep_enable_timer_wakeup(sleepUs);
+  esp_deep_sleep_start();
+}
+
+// Deep sleep with no wake-up source: only RST (or power cycle) starts the device again
+void sleepForever() {
+  Serial.flush();
+  esp_deep_sleep_start();
 }

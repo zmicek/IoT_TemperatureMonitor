@@ -1,107 +1,72 @@
-# NodeMCU board modification for battery power
+# ESP32-C3 SuperMini modification for battery power
 
-The ESP-12E module draws about 20 µA in deep sleep, but a stock NodeMCU board draws milliamps. Almost all of it goes to the voltage regulator and the USB-serial chip. This guide describes how to reduce sleep current on a **Lolin NodeMCU V3** (CH340G) for running from an 18650 battery.
+The ESP32-C3 chip draws about 5 µA in deep sleep, and the SuperMini has no USB-serial chip. Most of what is left in sleep is the power LED and the voltage regulator. This guide describes how to check and reduce both.
 
-Figures below are typical or datasheet values, not measurements on this project. Measure your own board before and after each step (see [Measuring current](#measuring-current)).
+SuperMini boards differ between manufacturers. Figures below are typical or datasheet values, not measurements on this project. Measure your own board before and after each step (see [Measuring current](#measuring-current)).
 
 ## Where the current goes
 
 | Component | Sleep current | Action |
 |---|---|---|
-| AMS1117-3.3 regulator | ~5 mA typical, up to 10 mA | Remove and replace |
-| CH340G USB-serial chip | from tens of µA to several mA, depends on how it is powered | Check its supply, cut or remove if needed |
-| ESP-12E module | ~20 µA | Stays |
-| Battery voltage divider (A0) | ~10 µA | Stays (see [Battery measurement](../README.md#battery-measurement)) |
+| Power LED (red) | ~1-3 mA, always on | Remove |
+| Voltage regulator | ~1-50 µA, depends on the part | Check the marking |
+| ESP32-C3 | ~5 µA | Stays |
+| Battery voltage divider | ~2 µA | Stays |
 | DS18B20 in standby | ~1 µA | Negligible |
 
-A stock board is commonly reported at 10-20 mA total in deep sleep. That empties a 2000 mAh battery in about a week. After the modifications below, expect roughly 30-100 µA, which with the WiFi wake-ups gives about 9-12 months.
+## Step 1: Remove the power LED
 
-## Step 1: Replace the AMS1117 regulator
+Most SuperMini boards have a red LED that lights whenever the board is powered. In sleep it draws more than everything else combined.
 
-The AMS1117 has high quiescent current and a large dropout voltage (around 1 V). From an 18650 it can't keep the ESP at 3.3 V once the battery drops below ~4.3 V, which is almost immediately. It has to go.
+Desolder the LED or its series resistor, whichever is easier to reach. Removing either one is enough. The blue LED on GPIO8 is controlled by the firmware and stays off in sleep, so leave it.
 
-**Remove it.** Powering the board through the 3V3 pin with the AMS1117 still in place is not enough: current can flow back through it. The AMS1117 is the SOT-223 part (3 pins plus a large tab) near the USB connector. Remove it with hot air, or cut its legs and then desolder the tab.
+## Step 2: Check the regulator
 
-**Power the 3V3 rail with one of these:**
+Look at the marking on the small 5-pin regulator near the USB connector and find its datasheet. What matters:
 
-| Option | Wiring | Notes |
-|---|---|---|
-| 18650 + low-quiescent LDO | battery + → LDO IN, LDO OUT → NodeMCU 3V3, GND common | HT7333 or MCP1700 (a few µA quiescent current, 250 mA output). Add a **470-1000 µF capacitor** on the 3.3 V output, otherwise WiFi current peaks can reset the ESP |
-| LiFePO4 cell (3.2 V) | battery + → NodeMCU 3V3 directly | No regulator needed: the cell voltage stays within the ESP range (about 2.5-3.6 V). Simplest and most efficient, but the battery cutoff and charge curve in [include/Battery.h](../include/Battery.h) are for Li-ion and would need changing |
-
-Check the regulator datasheet for dropout voltage at your load. Near the end of discharge the ESP gets battery voltage minus dropout.
-
-**After this step USB no longer powers the ESP.** USB 5V only reaches VIN and the CH340G. During development, connect the battery or a 3.3 V bench supply as well as USB.
-
-## Step 2: Check how the CH340G is powered
-
-On Lolin boards the CH340G supply differs between manufacturers. Find out which rail it is on before deciding what to do.
-
-CH340G pins (SOP-16):
-
-| Pin | Function |
+| Property | Why |
 |---|---|
-| 1 | GND |
-| 4 | V3 |
-| 16 | VCC |
+| Quiescent current | Adds directly to sleep current. Good parts are in the 1-50 µA range |
+| Maximum output current | WiFi transmit peaks reach ~350 mA. A regulator rated for less (some are 200-250 mA) may let the voltage dip and cause brownout resets |
+| Dropout voltage | Determines how low the battery can go. At 3.3 V battery and high load, the ESP gets battery voltage minus dropout |
 
-With the board unpowered, use the continuity tester of a multimeter between **pin 16** and the **3V3** pin, then between **pin 16** and the **VIN/VU** pin.
+If you see `brownout` as the wake-up reason, add a **470-1000 µF capacitor** between 3V3 and GND close to the board. It covers the short WiFi current peaks.
 
-| Pin 16 connected to | What happens on battery, USB unplugged | Action |
-|---|---|---|
-| VIN / VUSB (5 V) | CH340G is unpowered and draws nothing from its supply | Nothing, but check [TX line leakage](#tx-line-leakage) |
-| 3V3 | CH340G is powered from the battery all the time | Lift pin 16 or cut the trace, or remove the chip |
+If the regulator has high quiescent current, you can replace it with a pin-compatible low-quiescent part, or remove it and feed 3V3 from an external regulator (for example HT7333 or MCP1700, both a few µA, but only 250 mA, so add the capacitor).
 
-To confirm, measure sleep current before and after lifting pin 16. The difference is what the CH340G draws.
+## Step 3: USB and battery at the same time
 
-### TX line leakage
+On many SuperMini boards the 5V pin is connected to USB VBUS. With the battery on the 5V pin, plugging in USB would push 5 V into the battery.
 
-When the CH340G is unpowered, the ESP TX pin (driven HIGH while awake) can leak current through the CH340G input protection diodes into its supply. This only happens while the ESP is awake, and the amount depends on the board, from tens of µA to around a milliamp.
+Check your board with a multimeter in diode mode between the USB connector VBUS and the 5V pin. If there is no diode, either:
 
-Removing the CH340G, or cutting the trace between the ESP TX and the CH340G RXD, eliminates it.
-
-## Step 3: Flashing without the CH340G
-
-If you removed the CH340G or cut its lines, flash through an external **3.3 V** USB-TTL adapter:
-
-| Adapter | NodeMCU |
-|---|---|
-| TX | RX |
-| RX | TX |
-| GND | GND |
-
-The board also needs power (battery or 3.3 V supply on 3V3). Do not power it from the adapter's 5 V pin.
-
-To enter the bootloader:
-
-1. Disconnect the D0-RST wire.
-2. Hold **FLASH**, press and release **RST**, then release FLASH.
-3. Run `pio run -t upload`.
-4. Reconnect the D0-RST wire and press RST.
+- disconnect the battery whenever USB is plugged in, or
+- add a Schottky diode (e.g. 1N5817) between battery + and the 5V pin, anode on the battery side. Keep the battery divider on the battery side of the diode.
 
 ## Measuring current
 
 Put a multimeter in series with battery +.
 
-- While the ESP is awake, use the **mA range**. WiFi current peaks reach 170 mA or more.
+- While the ESP is awake, use the **mA range**. WiFi current peaks reach ~350 mA.
 - In deep sleep, switch to the **µA range** for accurate readings.
 
-The µA range has a high internal resistance (burden voltage). If the ESP wakes up while the meter is on that range, the supply voltage drops and the ESP may reset or fail to connect. A practical approach:
+The µA range has a high internal resistance (burden voltage). If the ESP wakes up while the meter is on that range, the supply voltage drops and the ESP may reset. A practical approach:
 
 1. Short the multimeter leads with a jumper wire.
-2. Wait until the ESP goes to sleep (`sleeping for ... s` in the serial output, or the WiFi current drops).
+2. Wait until the ESP goes to sleep (the USB port disappears, or the current drops).
 3. Remove the jumper and read the sleep current on the µA range.
 4. Put the jumper back before the next wake-up.
+
+Measure with USB unplugged. USB powers the board through VBUS and the reading would be meaningless.
 
 ### Expected values
 
 | Board state | Deep sleep current |
 |---|---|
-| Stock NodeMCU | ~10-20 mA |
-| AMS1117 removed, CH340G on 3V3 | depends on the CH340G, from ~100 µA to several mA |
-| AMS1117 removed, CH340G unpowered or removed | ~30-100 µA |
+| Stock SuperMini | ~1-3 mA (mostly the power LED) |
+| Power LED removed | ~10-60 µA, depending on the regulator |
 
-The last row includes the ESP (~20 µA), battery divider (~10 µA), LDO quiescent current (a few µA) and the DS18B20 (~1 µA). If you measure much more, something else is still powered. Look for LEDs or other parts on the 3.3 V rail.
+If you measure much more after removing the LED, look for other parts on the 3.3 V rail, or a DS18B20 wired for parasite power.
 
 ## Charging and battery protection
 

@@ -4,7 +4,7 @@
 
 #define DEFAULT_INTERVAL_MIN 30
 #define MIN_INTERVAL_MIN 1
-#define MAX_INTERVAL_MIN 180  // ESP8266 deep sleep limit is ~3.5 h
+#define MAX_INTERVAL_MIN 180
 
 // Per-device settings entered in the config portal and stored in LittleFS
 struct DeviceConfig {

@@ -1,7 +1,7 @@
 // Must come before the Blynk header: it defines BLYNK_TEMPLATE_ID/NAME
 #include "blynk_template.h"
 
-#include <BlynkSimpleEsp8266.h>
+#include <BlynkSimpleEsp32.h>
 
 #include "BlynkSink.h"
 
